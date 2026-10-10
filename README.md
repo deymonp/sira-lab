@@ -24,15 +24,17 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 3. **Score** every token's self-information with a small open LM (`-log p(token | context)`, in nats).
 4. **Mask** the words with the *highest* self-information (the high-entropy positions where watermark signal tends to sit),
    never touching citations, numbers, acronyms, names, quotes, math or code.
-5. **Infill** the masks with a different open-weights instruct LLM. The output is aligned back to the template, so
-   text outside the masks is guaranteed unchanged (`gen.strict: true`).
+5. **Infill** the masks with a different open-weights instruct LLM. Default `gen.mode: list`: the model returns only
+   `N: word` lines and we insert them ourselves, so text outside the masks is never altered and generation is fast.
+   If a model ignores that format, the chunk falls back to `passage` mode (model rewrites the whole passage; strict alignment check).
+   Every failed attempt records what the model actually said in `ChunkReport.warnings`.
 6. **Gate**: semantic similarity to the original (default >= 0.85) and perplexity ratio (<= 1.6). Failed chunks retry with a lower mask ratio.
 
 ## Quick start (Colab, free T4)
 
 1. Open `notebooks/00_setup.ipynb` in Colab (File -> Open notebook -> GitHub tab -> `deymonp/sira-lab`), set the runtime to **T4 GPU**.
 2. Add Colab secret `HF_TOKEN` (key icon, **Notebook access** on).
-3. Run all cells; expect `27 passed`.
+3. Run all cells; expect `34 passed`.
 4. Open `notebooks/01_quickstart.ipynb` and run it.
 
 CPU-only UI check (no downloads): `python app/app.py --fake`

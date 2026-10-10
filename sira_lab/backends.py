@@ -16,6 +16,8 @@ class HFBackend:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+        from .scorer import dtype_kwarg
+
         self.torch = torch
         self.batch_size = batch_size
         self.tok = AutoTokenizer.from_pretrained(name)
@@ -29,7 +31,7 @@ class HFBackend:
                 bnb_4bit_compute_dtype=getattr(torch, dtype),
             )
         else:
-            kwargs["torch_dtype"] = getattr(torch, dtype)
+            kwargs.update(dtype_kwarg(torch, dtype))
         self.model = AutoModelForCausalLM.from_pretrained(name, **kwargs).eval()
 
     def generate(self, batch, max_new_tokens, temperature, top_p):

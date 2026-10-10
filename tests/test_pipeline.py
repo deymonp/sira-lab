@@ -60,3 +60,23 @@ def test_input_limit():
 def test_heatmap_roundtrip():
     segs = build_fake_rewriter(_cfg()).heatmap(DOC)
     assert any(lbl == "masked" for _, lbl in segs)
+
+
+def test_passage_mode_still_works():
+    rep = build_fake_rewriter(_cfg(gen={"mode": "passage"}, gate={"min_sim": 0.0, "max_ppl_ratio": 100})).rewrite(DOC)
+    assert any(c.status == "rewritten" for c in rep.chunks)
+
+
+def test_list_failure_falls_back_to_passage_and_explains():
+    rw = build_fake_rewriter(_cfg(gate={"min_sim": 0.0, "max_ppl_ratio": 100}), fail_first=2)
+    rep = rw.rewrite(DOC)
+    rewritten = [c for c in rep.chunks if c.status == "rewritten"]
+    assert rewritten
+    assert any("list mode" in w and "Model said" in w for c in rep.chunks for w in c.warnings)
+
+
+def test_unfixable_failure_reports_raw_output():
+    rw = build_fake_rewriter(_cfg(), fail_first=999)
+    rep = rw.rewrite(DOC)
+    bad = [c for c in rep.chunks if c.status == "unchanged"]
+    assert bad and any("Sorry, I cannot do that" in w for c in bad for w in c.warnings)

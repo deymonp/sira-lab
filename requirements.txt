@@ -5,6 +5,7 @@ accelerate>=0.33
 bitsandbytes>=0.43
 sentence-transformers>=3.0
 pyyaml
+packaging
 numpy
 gradio>=4.40
 pytest

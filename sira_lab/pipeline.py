@@ -9,7 +9,7 @@ from typing import Callable, List, Optional, Tuple
 from .chunking import Chunk, count_words, join_chunks, make_chunks
 from .config import Config, config_hash
 from .gates import check
-from .infill import build_messages, parse_candidate
+from .infill import build_messages, parse_output
 from .masker import MaskResult, Word, find_words, heat_segments, make_template, score_words, select_masks
 from .normalize import normalize
 
@@ -87,6 +87,7 @@ class _State:
     best: Optional[tuple] = None
     done: bool = False
     orig_ms: Optional[float] = None
+    mode: str = "list"
 
 
 class SiraRewriter:
@@ -165,6 +166,7 @@ class SiraRewriter:
         cfg = self.cfg
         for s in states:
             s.ratio, s.best, s.done = ratio0, None, False
+            s.mode = cfg.gen.mode
             s.scores = self.scorer.score(s.cur)
             s.words = find_words(s.cur, cfg.mask)
             score_words(s.words, s.scores.spans, s.scores.surprisal, cfg.mask.agg)
@@ -187,16 +189,23 @@ class SiraRewriter:
             pending = [s for s in pending if not s.done]
             if not prepared:
                 break
-            batch = [build_messages(mr.template) for _, mr in prepared]
-            longest = max(count_words(mr.template) for _, mr in prepared)
-            max_new = min(cfg.gen.max_new_tokens, int(1.7 * longest) + 120)
+            batch = [build_messages(mr.template, s.mode) for s, mr in prepared]
+            need = [
+                (12 * len(mr.masks) + 40) if s.mode == "list" else (int(1.7 * count_words(mr.template)) + 120)
+                for s, mr in prepared
+            ]
+            max_new = min(cfg.gen.max_new_tokens, max(need))
             raws = self.backend.generate(batch, max_new, temp, cfg.gen.top_p)
 
             nxt: List[_State] = []
             for (s, mr), raw in zip(prepared, raws):
                 s.attempts += 1
-                cand = parse_candidate(mr.template, [m.original for m in mr.masks], raw, cfg.gen.strict)
+                cand, reason = parse_output(s.mode, mr.template, [m.original for m in mr.masks], raw, cfg.gen.strict)
                 if cand is None:
+                    preview = raw.strip().replace("\n", " | ")[:200]
+                    s.warnings.append(f"round {r + 1} attempt {attempt + 1} ({s.mode} mode): {reason}. Model said: {preview!r}")
+                    if s.mode == "list" and cfg.gen.fallback_to_passage:
+                        s.mode = "passage"
                     nxt.append(s)
                     continue
                 text_c, swaps = cand

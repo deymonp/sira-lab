@@ -11,6 +11,15 @@ class TokenScores:
     surprisal: List[float]         # -log p(token | previous tokens), nats
 
 
+def dtype_kwarg(torch_module, dtype_name: str) -> dict:
+    """transformers >= 4.56 wants `dtype=`; older versions want `torch_dtype=`."""
+    import transformers
+    from packaging.version import Version
+
+    key = "dtype" if Version(transformers.__version__.split("+")[0]) >= Version("4.56.0") else "torch_dtype"
+    return {key: getattr(torch_module, dtype_name)}
+
+
 class Scorer(Protocol):
     def score(self, text: str) -> TokenScores: ...
     def mean_surprisal(self, text: str) -> float: ...
@@ -26,7 +35,7 @@ class HFScorer:
         if not getattr(self.tok, "is_fast", False):
             raise ValueError("Scorer needs a fast tokenizer (offset mappings).")
         self.model = AutoModelForCausalLM.from_pretrained(
-            name, torch_dtype=getattr(torch, dtype), device_map=device_map
+            name, device_map=device_map, **dtype_kwarg(torch, dtype)
         ).eval()
         self.max_tokens = max_tokens
         # Models like Qwen have no BOS; use EOS as the context token so the first real token is scored too.

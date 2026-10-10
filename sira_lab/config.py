@@ -36,7 +36,9 @@ class GenCfg:
     top_p: float = 0.9
     batch_size: int = 4
     max_attempts: int = 3           # covers parse failures and gate failures
-    strict: bool = True             # only accept outputs whose unmasked text is untouched
+    strict: bool = True             # passage mode only: reject outputs whose unmasked text was altered
+    mode: str = "list"              # list = model returns only the fills ("1: word"); passage = model rewrites the whole passage
+    fallback_to_passage: bool = True  # if list mode fails to parse, retry in passage mode
 
 
 @dataclass

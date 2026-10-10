@@ -42,6 +42,10 @@ class FakeBackend:
             if self.calls <= self.fail_first:
                 outs.append("Sorry, I cannot do that.")
                 continue
+            if "one line per placeholder" in user:
+                nums = MASK_RE.findall(template)
+                outs.append("\n".join(f"{n}: alt{n}" for n in nums))
+                continue
             text = MASK_RE.sub(lambda mm: f"alt{mm.group(1)}", template)
             if self.corrupt:
                 text = "Completely unrelated sentence about cooking pasta."
