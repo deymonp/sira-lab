@@ -1,0 +1,7 @@
+# For the ZeroGPU Space (Sprint 4, not yet tested): no 4-bit; the shared GPU has plenty of memory.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: false
+  dtype: bfloat16
+max_input_words: 600

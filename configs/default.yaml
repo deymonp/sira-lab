@@ -1,0 +1,14 @@
+# Colab free T4 (15 GB): 0.5B scorer (fp16) + 7B infiller (4-bit) fits comfortably.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+mask:
+  mask_ratio: 0.30
+gen:
+  batch_size: 4
+  temperature: 0.7
+gate:
+  min_sim: 0.85
+rounds: 1

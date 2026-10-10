@@ -1,0 +1,10 @@
+# Colab already ships torch/numpy; versions are intentionally unpinned for the first run.
+# After the first successful run, 00_setup writes requirements.lock.txt -> commit it and pin.
+transformers>=4.44
+accelerate>=0.33
+bitsandbytes>=0.43
+sentence-transformers>=3.0
+pyyaml
+numpy
+gradio>=4.40
+pytest

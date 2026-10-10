@@ -1,0 +1,9 @@
+# Tiny models for quick checks / CPU-only runs. Quality is NOT representative.
+models:
+  scorer: HuggingFaceTB/SmolLM2-360M
+  infiller: Qwen/Qwen2.5-1.5B-Instruct
+  quantize_4bit: false
+  dtype: float16
+gen:
+  batch_size: 2
+  max_attempts: 2
