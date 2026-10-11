@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable, List, Optional, Tuple
@@ -93,6 +94,7 @@ class _State:
 class SiraRewriter:
     def __init__(self, cfg: Config, scorer, backend, sim_model):
         self.cfg, self.scorer, self.backend, self.sim_model = cfg, scorer, backend, sim_model
+        self._rng = random.Random(cfg.seed)
         try:
             from transformers import set_seed
 
@@ -113,28 +115,40 @@ class SiraRewriter:
             ts = self.scorer.score(ch.text)
             words = find_words(ch.text, self.cfg.mask)
             score_words(words, ts.spans, ts.surprisal, self.cfg.mask.agg)
-            chosen = select_masks(words, self.cfg.mask, mask_ratio)
+            chosen = select_masks(words, self.cfg.mask, mask_ratio, self._rng)
             segs += heat_segments(ch.text, words, chosen)
         return segs
 
     # ------------------------------------------------------------------ main
-    def rewrite(self, text: str, *, mask_ratio: Optional[float] = None, rounds: Optional[int] = None,
-                temperature: Optional[float] = None,
-                progress: Optional[Callable[[float, str], None]] = None) -> Report:
+    def rewrite(self, text: str, **kw) -> Report:
+        return self.rewrite_many([text], **kw)[0]
+
+    def rewrite_many(self, texts: List[str], *, mask_ratio: Optional[float] = None, rounds: Optional[int] = None,
+                     temperature: Optional[float] = None,
+                     progress: Optional[Callable[[float, str], None]] = None) -> List[Report]:
+        """Rewrite several documents at once; chunks from all documents are batched together."""
         cfg, t0 = self.cfg, time.time()
-        if count_words(text) > cfg.max_input_words:
-            raise ValueError(f"Input has {count_words(text)} words; limit is {cfg.max_input_words}.")
         ratio0 = cfg.mask.mask_ratio if mask_ratio is None else mask_ratio
         rounds = cfg.rounds if rounds is None else rounds
         temp = cfg.gen.temperature if temperature is None else temperature
 
-        norm, nstats = normalize(text)
-        chunks = make_chunks(norm, cfg.chunk)
-        states = [_State(c, c.text, status=f"skipped:{c.skip_reason}" if not c.rewrite else "unchanged") for c in chunks]
-        active = [s for s in states if s.chunk.rewrite]
+        docs = []
+        for text in texts:
+            if count_words(text) > cfg.max_input_words:
+                raise ValueError(f"Input has {count_words(text)} words; limit is {cfg.max_input_words}.")
+            norm, nstats = normalize(text)
+            chunks = make_chunks(norm, cfg.chunk)
+            states = [_State(c, c.text, status=f"skipped:{c.skip_reason}" if not c.rewrite else "unchanged")
+                      for c in chunks]
+            docs.append((text, nstats, chunks, states))
+
+        active = [s for d in docs for s in d[3] if s.chunk.rewrite]
         for r in range(rounds):
             self._run_round(active, r, ratio0, temp, progress, rounds)
+        elapsed = (time.time() - t0) / max(len(docs), 1)
+        return [self._finish(text, nstats, chunks, states, elapsed) for text, nstats, chunks, states in docs]
 
+    def _finish(self, text, nstats, chunks, states, elapsed) -> Report:
         out = join_chunks(chunks, [s.cur for s in states])
         reports, wsum, simsum, pplsum = [], 0, 0.0, 0.0
         for s in states:
@@ -158,7 +172,7 @@ class SiraRewriter:
             words_total=sum(r.n_words for r in reports),
             words_masked=sum(r.n_masked for r in reports),
             words_changed=sum(r.n_changed for r in reports),
-            elapsed_s=time.time() - t0, config_hash=config_hash(cfg),
+            elapsed_s=elapsed, config_hash=config_hash(self.cfg),
             normalize_stats=nstats, warnings=warnings)
 
     # ------------------------------------------------------------------ internals
@@ -180,7 +194,7 @@ class SiraRewriter:
                 break
             prepared: List[Tuple[_State, MaskResult]] = []
             for s in pending:
-                chosen = select_masks(s.words, cfg.mask, s.ratio)
+                chosen = select_masks(s.words, cfg.mask, s.ratio, self._rng)
                 if not chosen:
                     s.warnings.append("no maskable words")
                     s.done = True

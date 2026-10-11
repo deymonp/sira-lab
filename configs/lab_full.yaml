@@ -1,0 +1,12 @@
+# Fuller run: 300 texts per class so TPR@1%FPR is meaningful (needs >= 100 negatives). Slow on a T4.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+lab:
+  generator: Qwen/Qwen2.5-1.5B
+  n_samples: 300
+  algorithms: [kgw, unigram, exp, synthid]
+  attacks: [sira, random, lowest, paraphrase]
+  detectors: [fast_detectgpt, binoculars]

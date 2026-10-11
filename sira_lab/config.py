@@ -23,6 +23,7 @@ class MaskCfg:
     mask_ratio: float = 0.30        # fraction of ALL words in a chunk to mask
     min_surprisal: float = 0.0      # nats; words below this are never masked
     agg: str = "max"                # how token surprisals combine into a word score: max | mean | sum
+    strategy: str = "surprisal"     # surprisal (SIRA) | random (control) | lowest (control: mask the most predictable words)
     min_gap: int = 0                # unmasked words required between two masks
     protect_acronyms: bool = True
     protect_capitalized: bool = True  # mid-sentence capitalised words (names) are kept
@@ -58,12 +59,41 @@ class ChunkCfg:
 
 
 @dataclass
+class LabCfg:
+    generator: str = "Qwen/Qwen2.5-1.5B"        # model that writes the (water)marked text
+    source: str = "hf"                           # hf (arXiv abstracts) | builtin (small prompt list)
+    dataset: str = "gfissore/arxiv-abstracts-2021"
+    text_field: str = "abstract"
+    n_samples: int = 100                         # per class (watermarked per algorithm, unwatermarked, human)
+    prompt_words: int = 30
+    max_new_tokens: int = 200
+    min_new_tokens: int = 150
+    gen_batch_size: int = 16
+    attack_batch_size: int = 16                  # texts per rewrite_many call
+    temperature: float = 0.8                     # sampling settings used for ALL generated text
+    top_p: float = 0.95                          # (zero-shot detectors only see machine text when it is not pure T=1 sampling)
+    algorithms: list = field(default_factory=lambda: ["kgw", "unigram"])   # kgw | unigram | exp | synthid
+    detectors: list = field(default_factory=lambda: ["fast_detectgpt", "binoculars"])   # zero-shot panel
+    fdg_model: str = "Qwen/Qwen2.5-1.5B"
+    bino_observer: str = "Qwen/Qwen2.5-1.5B"
+    bino_performer: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    detect_tokens: int = 150                     # zero-shot detectors score only the first N tokens of every text
+    gamma: float = 0.5
+    delta: float = 2.0
+    key: int = 15485863
+    z_threshold: float = 4.0
+    attacks: list = field(default_factory=lambda: ["sira", "random", "lowest", "paraphrase"])
+    fpr: float = 0.01
+
+
+@dataclass
 class Config:
     models: ModelCfg = field(default_factory=ModelCfg)
     mask: MaskCfg = field(default_factory=MaskCfg)
     gen: GenCfg = field(default_factory=GenCfg)
     gate: GateCfg = field(default_factory=GateCfg)
     chunk: ChunkCfg = field(default_factory=ChunkCfg)
+    lab: LabCfg = field(default_factory=LabCfg)
     rounds: int = 1
     seed: int = 42
     max_input_words: int = 1200

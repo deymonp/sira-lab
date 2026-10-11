@@ -1,0 +1,12 @@
+# First real experiment (T4): 60 texts per class. Too few negatives for a precise TPR@1%FPR; it is a first look.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+lab:
+  generator: Qwen/Qwen2.5-1.5B
+  n_samples: 60
+  algorithms: [kgw, exp, synthid]
+  attacks: [sira, random, lowest, paraphrase]
+  detectors: [fast_detectgpt, binoculars]

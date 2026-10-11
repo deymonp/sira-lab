@@ -1,1 +1,1 @@
-"""Evaluation Lab (watermark generation + detector panel). Sprint 1."""
+"""Evaluation Lab: watermark generation, attacks, detection and metrics."""

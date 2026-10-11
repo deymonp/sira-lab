@@ -7,6 +7,7 @@ those words and let a different LLM fill them in.
 from __future__ import annotations
 
 import bisect
+import random
 import re
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -141,10 +142,17 @@ def score_words(words: List[Word], spans: Sequence[Tuple[int, int]], surprisal: 
             w.score = float(max(vals))
 
 
-def select_masks(words: List[Word], cfg: MaskCfg, ratio: Optional[float] = None) -> List[Word]:
+def select_masks(words: List[Word], cfg: MaskCfg, ratio: Optional[float] = None,
+                 rng: Optional[random.Random] = None) -> List[Word]:
     ratio = cfg.mask_ratio if ratio is None else ratio
     target = int(round(ratio * len(words)))
-    cands = sorted((w for w in words if w.candidate and w.score >= cfg.min_surprisal), key=lambda w: -w.score)
+    cands = [w for w in words if w.candidate and w.score >= cfg.min_surprisal]
+    if cfg.strategy == "random":
+        (rng or random.Random(0)).shuffle(cands)
+    elif cfg.strategy == "lowest":
+        cands.sort(key=lambda w: w.score)
+    else:
+        cands.sort(key=lambda w: -w.score)
     chosen: List[Word] = []
     taken: List[int] = []
     for w in cands:

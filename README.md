@@ -14,7 +14,7 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 | --- | --- |
 | Rewriter core (normalize, chunk, score, mask, infill, gates) | Implemented; unit-tested with fake models; real-model path first exercised in Colab |
 | Gradio UI (rewrite + surprisal preview) | Implemented; smoke-tested with fake models |
-| Evaluation Lab (MarkLLM watermark generation, detector panel) | Next (metrics module done) |
+| Evaluation Lab: watermarks (KGW, Unigram, EXP, SynthID-Text), attacks (SIRA, random, lowest, paraphrase), detector panel (watermark z-tests, Fast-DetectGPT, Binoculars), TPR@FPR/AUROC, trade-off plot | Implemented; maths and flow unit-tested with numpy toys; GPU stages first run in Colab (`notebooks/02_lab.ipynb`). See `ROADMAP.md` |
 | ZeroGPU Space deployment | Planned (Sprint 4) |
 
 ## How it works
@@ -34,7 +34,7 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 
 1. Open `notebooks/00_setup.ipynb` in Colab (File -> Open notebook -> GitHub tab -> `deymonp/sira-lab`), set the runtime to **T4 GPU**.
 2. Add Colab secret `HF_TOKEN` (key icon, **Notebook access** on).
-3. Run all cells; expect `34 passed`.
+3. Run all cells; expect `55 passed`.
 4. Open `notebooks/01_quickstart.ipynb` and run it.
 
 CPU-only UI check (no downloads): `python app/app.py --fake`
@@ -43,9 +43,9 @@ CPU-only UI check (no downloads): `python app/app.py --fake`
 
 ```
 sira_lab/   normalize.py chunking.py scorer.py masker.py infill.py backends.py gates.py pipeline.py factory.py ui.py testing.py
-sira_lab/lab/  metrics.py (generation + detector adapters coming)
-configs/    default.yaml (T4)  smoke.yaml (tiny models)  space.yaml (ZeroGPU, untested)
-notebooks/  00_setup  01_quickstart
+sira_lab/lab/  watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
+configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full .yaml
+notebooks/  00_setup  01_quickstart  02_lab
 tests/      CPU-only unit tests
 app/app.py  launcher
 ```
@@ -58,3 +58,18 @@ Check each model card's license before redistributing anything derived from them
 ## Reproducibility
 
 Every run records a config hash (`Report.config_hash`) and seed. `00_setup` writes `requirements.lock.txt` after a successful run.
+
+## Evaluation Lab
+
+`notebooks/02_lab.ipynb` runs three resumable stages (outputs are JSONL/CSV files in a run folder):
+
+1. **generate**: human reference (arXiv abstracts), unwatermarked and watermarked continuations from an open LM.
+2. **attack**: SIRA vs. control strategies (random words, lowest-surprisal words) vs. a plain LLM paraphrase.
+3. **evaluate**: z-score detection, TPR at a fixed FPR, AUROC, semantic similarity, perplexity ratio, plus a trade-off plot.
+
+Watermarks: `kgw`, `unigram`, `exp` are our own implementations (same statistics as the papers, different
+pseudo-random function); `synthid` uses the SynthID-Text reference implementation in `transformers` with a mean-g-value
+detector (not Google's production Gemini watermark). Detectors: the matching watermark z-tests plus Fast-DetectGPT and
+Binoculars (zero-shot, "is it machine-written?"). Watermark detectors are calibrated on unwatermarked machine text;
+zero-shot detectors on human text. Not yet covered: SIR / EWD / SWEET / DiPmark / Christ (via MarkLLM, phase 4),
+classifier-based detectors. See `ROADMAP.md`.
