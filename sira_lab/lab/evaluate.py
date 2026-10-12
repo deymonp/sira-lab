@@ -1,16 +1,28 @@
-"""Stage 3: run the detector panel -> results table and plot. Detectors are loaded, used and freed one at a time."""
+"""Stage 3: run the detector panel -> results table, per-text scores and plots.
+Detectors are loaded, used and freed one at a time."""
 from __future__ import annotations
 
 import gc
+import re
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
 
+from .attacks import attack_filename
 from .io import read_jsonl
 from .metrics import auroc, tpr_at_fpr
 
-_IDENT = {"sim": 1.0, "edit_ratio": 1.0, "ppl_ratio": 1.0, "status": "none"}
+_IDENT = {"sim": 1.0, "edit_ratio": 1.0, "ppl_ratio": 1.0, "changed": 0.0, "status": "none"}
+
+
+def _boot_ci(flags: np.ndarray, n_boot: int = 1000, seed: int = 0):
+    flags = np.asarray(flags, float)
+    if len(flags) == 0:
+        return float("nan"), float("nan")
+    idx = np.random.default_rng(seed).integers(0, len(flags), (n_boot, len(flags)))
+    m = flags[idx].mean(axis=1)
+    return float(np.percentile(m, 2.5)), float(np.percentile(m, 97.5))
 
 
 def _row(det, algo: str, attack: str, pos: np.ndarray, neg: np.ndarray, neg_set: str, fpr: float, recs: List[dict]) -> Dict:
@@ -20,8 +32,17 @@ def _row(det, algo: str, attack: str, pos: np.ndarray, neg: np.ndarray, neg_set:
 
     thr = getattr(det, "threshold", None)
     n = len(recs) or 1
+    if thr is not None:
+        flags = pos >= thr
+    elif len(neg):
+        flags = pos > np.quantile(neg, 1.0 - fpr)         # threshold that gives `fpr` false alarms on the negatives
+    else:
+        flags = np.array([], dtype=bool)
+    lo, hi = _boot_ci(flags)
     return {
         "detector": det.name, "algo": algo, "attack": attack, "n": len(pos), "n_neg": len(neg), "neg_set": neg_set,
+        "detect_rate": float(np.mean(flags)) if len(flags) else float("nan"), "rate_lo": lo, "rate_hi": hi,
+        "changed_mean": agg(np.mean, "changed"),
         "TPR@FPR": tpr_at_fpr(pos, neg, fpr) if len(pos) and len(neg) else float("nan"),
         "AUROC": auroc(pos, neg) if len(pos) and len(neg) else float("nan"),
         "mean_score": float(np.mean(pos)) if len(pos) else float("nan"),
@@ -34,30 +55,40 @@ def _row(det, algo: str, attack: str, pos: np.ndarray, neg: np.ndarray, neg_set:
     }
 
 
-def _rows_for(det, cfg, gen: List[dict], attacks: Dict[str, List[dict]]) -> List[Dict]:
+def _scored(det, recs: List[dict], algo: str, attack: str, sink: List[dict]) -> np.ndarray:
+    sc = det.score([r["text"] for r in recs])
+    for r, s in zip(recs, sc):
+        sink.append({"detector": det.name, "algo": algo, "attack": attack, "id": r.get("id"), "score": float(s),
+                     "sim": r.get("sim"), "changed": r.get("changed")})
+    return sc
+
+
+def _rows_for(det, cfg, gen: List[dict], attacks: Dict[str, List[dict]], sink: List[dict]) -> List[Dict]:
     fpr = cfg.lab.fpr
-    unwm = [r["text"] for r in gen if r["kind"] == "unwatermarked" and r["text"].strip()]
-    human = [r["text"] for r in gen if r["kind"] == "human" and r["text"].strip()]
+    unwm = [r for r in gen if r["kind"] == "unwatermarked" and r["text"].strip()]
+    human = [r for r in gen if r["kind"] == "human" and r["text"].strip()]
     rows: List[Dict] = []
     if det.kind == "watermark":
-        algos, neg_set, neg_texts = [det.algo], "unwatermarked", unwm
+        algos, neg_set, neg_recs = [det.algo], "unwatermarked", unwm
     else:   # zero-shot: question is 'machine vs human', so negatives are human texts
-        algos, neg_set, neg_texts = list(cfg.lab.algorithms), "human", human
+        algos, neg_set, neg_recs = list(cfg.lab.algorithms), "human", human
         if not human:
             print(f"[evaluate] {det.name}: no human reference texts (builtin prompts) -> skipped")
             return rows
-    neg = det.score(neg_texts) if neg_texts else np.array([])
+    neg = _scored(det, neg_recs, "none", f"NEG:{neg_set}", sink) if neg_recs else np.array([])
+    ident = lambda rs: [{**r, **_IDENT} for r in rs]
     if det.kind == "zeroshot" and unwm:
-        rows.append(_row(det, "-", "unwatermarked (AI baseline)", det.score(unwm), neg, neg_set, fpr, [dict(_IDENT)] * len(unwm)))
+        rows.append(_row(det, "-", "unwatermarked (AI baseline)", _scored(det, ident(unwm), "-", "unwatermarked (AI baseline)", sink),
+                         neg, neg_set, fpr, ident(unwm)))
     for algo in algos:
-        wm = [r["text"] for r in gen if r["kind"] == "watermarked" and r["algo"] == algo and r["text"].strip()]
+        wm = [r for r in gen if r["kind"] == "watermarked" and r["algo"] == algo and r["text"].strip()]
         if not wm:
             continue
-        rows.append(_row(det, algo, "none", det.score(wm), neg, neg_set, fpr, [dict(_IDENT)] * len(wm)))
+        rows.append(_row(det, algo, "none", _scored(det, ident(wm), algo, "none", sink), neg, neg_set, fpr, ident(wm)))
         for attack, recs_all in attacks.items():
             recs = [r for r in recs_all if r["algo"] == algo]
             if recs:
-                rows.append(_row(det, algo, attack, det.score([r["text"] for r in recs]), neg, neg_set, fpr, recs))
+                rows.append(_row(det, algo, attack, _scored(det, recs, algo, attack, sink), neg, neg_set, fpr, recs))
     return rows
 
 
@@ -67,12 +98,16 @@ def evaluate(cfg, run_dir, detectors: list):
 
     run_dir = Path(run_dir)
     gen = read_jsonl(run_dir / "generated.jsonl")
-    attacks = {a: read_jsonl(run_dir / f"attacked_{a}.jsonl") for a in cfg.lab.attacks}
+    attacks = {a: read_jsonl(run_dir / attack_filename(a)) for a in cfg.lab.attacks}
+    missing = [a for a, r in attacks.items() if not r]
+    if missing:
+        print(f"[evaluate] no results yet for: {missing} (skipped)")
     rows: List[Dict] = []
+    sink: List[dict] = []
     for item in detectors:
         det = item if hasattr(item, "score") else item()
         try:
-            rows += _rows_for(det, cfg, gen, attacks)
+            rows += _rows_for(det, cfg, gen, attacks, sink)
         finally:
             del det
             gc.collect()
@@ -84,6 +119,7 @@ def evaluate(cfg, run_dir, detectors: list):
     df = pd.DataFrame(rows)
     df.to_csv(run_dir / "results.csv", index=False)
     (run_dir / "results.md").write_text(to_markdown(df), encoding="utf-8")
+    pd.DataFrame(sink).to_csv(run_dir / "scores.csv", index=False)
     return df
 
 
@@ -94,6 +130,53 @@ def to_markdown(df) -> str:
         cells = [f"{v:.3f}" if isinstance(v, float) else str(v) for v in r.tolist()]
         out.append("| " + " | ".join(cells) + " |")
     return "\n".join(out)
+
+
+def _family(attack: str) -> str:
+    m = re.match(r"^(sira|random|lowest)(?:@[\d.]+)?(x\d+)?$", attack)
+    if m:
+        return m.group(1) + (f" ({m.group(2)[1:]} rounds)" if m.group(2) else "")
+    return attack
+
+
+def plot_dose_response(df, path) -> None:
+    """Detection rate (y, lower = evaded) against the share of words changed (x), one line per attack family.
+    The question it answers: at the SAME edit level, does targeting (sira) beat random / lowest editing?"""
+    import matplotlib
+    import pandas as pd
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    d = df[~df["attack"].str.startswith("unwatermarked")].dropna(subset=["changed_mean", "detect_rate"])
+    pairs = list(d[["detector", "algo"]].drop_duplicates().itertuples(index=False, name=None))
+    if not pairs:
+        return
+    ncols = min(3, len(pairs))
+    nrows = -(-len(pairs) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.2 * ncols, 4.2 * nrows), squeeze=False)
+    for ax in axes.flat[len(pairs):]:
+        ax.axis("off")
+    for ax, (det, algo) in zip(axes.flat, pairs):
+        sub = d[(d["detector"] == det) & (d["algo"] == algo)].copy()
+        sub["family"] = sub["attack"].map(_family)
+        base = sub[sub["attack"] == "none"]
+        for fam, g in sub[sub["attack"] != "none"].groupby("family"):
+            g = g.sort_values("changed_mean")
+            g = g if base.empty else pd.concat([g, base]).sort_values("changed_mean")
+            ax.errorbar(g["changed_mean"], g["detect_rate"],
+                        yerr=[g["detect_rate"] - g["rate_lo"], g["rate_hi"] - g["detect_rate"]],
+                        marker="o", capsize=2, label=fam, linewidth=1.2)
+        ax.set_title(f"{det} / {algo}", fontsize=10)
+        ax.set_xlabel("share of original words changed", fontsize=8)
+        ax.set_ylabel("detection rate (lower = evaded)", fontsize=8)
+        ax.set_xlim(-0.02, 1.0)
+        ax.set_ylim(-0.02, 1.02)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
 
 
 def plot_tradeoff(df, path) -> None:

@@ -29,3 +29,13 @@ def edit_ratio(a: str, b: str) -> float:
 
 def perplexity(mean_surprisal_nats: float) -> float:
     return float(np.exp(mean_surprisal_nats))
+
+
+def changed_share(orig: str, new: str) -> float:
+    """Share of the ORIGINAL words that were replaced, deleted or rewritten (0 = identical, 1 = everything changed)."""
+    wa, wb = orig.split(), new.split()
+    if not wa:
+        return 0.0
+    sm = SequenceMatcher(None, wa, wb, autojunk=False)
+    changed = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")
+    return float(min(1.0, changed / len(wa)))

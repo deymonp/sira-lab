@@ -41,4 +41,4 @@ def check(orig: str, cand: str, orig_mean_surprisal: float, sim_model: SimModel,
         reasons.append(f"similarity {sim:.2f} < {cfg.min_sim}")
     if ratio > cfg.max_ppl_ratio:
         reasons.append(f"perplexity ratio {ratio:.2f} > {cfg.max_ppl_ratio}")
-    return GateResult(not reasons, sim, ratio, reasons)
+    return GateResult(not reasons or not cfg.enforce, sim, ratio, reasons)

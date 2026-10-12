@@ -48,6 +48,7 @@ class GateCfg:
     max_ppl_ratio: float = 1.6      # perplexity(out) / perplexity(orig) under the scorer LM
     ratio_decay: float = 0.7        # mask_ratio multiplier after a failed gate
     on_fail: str = "best"           # best | original
+    enforce: bool = True            # False = still measure similarity/perplexity, but never reject a rewrite because of them
 
 
 @dataclass

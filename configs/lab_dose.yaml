@@ -1,0 +1,16 @@
+# Matched-edit-budget experiment. Re-uses generated.jsonl and attacked_paraphrase.jsonl from the previous run if RUN points
+# at the same folder. Gates only MEASURE (they no longer reject rewrites), so every attack really edits the text.
+# Attack names: strategy@mask_ratio, optional xN = N rewrite rounds. Order = priority; you can stop after any attack.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+gate:
+  enforce: false
+lab:
+  generator: Qwen/Qwen2.5-1.5B
+  n_samples: 40
+  algorithms: [kgw, synthid]
+  attacks: ["sira@0.3", "random@0.3", "sira@0.15", "random@0.15", "lowest@0.3", "sira@0.3x2", "random@0.3x2", "paraphrase"]
+  detectors: [fast_detectgpt, binoculars]

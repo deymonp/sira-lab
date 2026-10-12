@@ -34,7 +34,7 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 
 1. Open `notebooks/00_setup.ipynb` in Colab (File -> Open notebook -> GitHub tab -> `deymonp/sira-lab`), set the runtime to **T4 GPU**.
 2. Add Colab secret `HF_TOKEN` (key icon, **Notebook access** on).
-3. Run all cells; expect `55 passed`.
+3. Run all cells; expect `62 passed`.
 4. Open `notebooks/01_quickstart.ipynb` and run it.
 
 CPU-only UI check (no downloads): `python app/app.py --fake`
@@ -43,9 +43,9 @@ CPU-only UI check (no downloads): `python app/app.py --fake`
 
 ```
 sira_lab/   normalize.py chunking.py scorer.py masker.py infill.py backends.py gates.py pipeline.py factory.py ui.py testing.py
-sira_lab/lab/  watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
-configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full .yaml
-notebooks/  00_setup  01_quickstart  02_lab
+sira_lab/lab/  analysis.py watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
+configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full / lab_dose .yaml
+notebooks/  00_setup  01_quickstart  02_lab  03_dose
 tests/      CPU-only unit tests
 app/app.py  launcher
 ```
@@ -73,3 +73,12 @@ detector (not Google's production Gemini watermark). Detectors: the matching wat
 Binoculars (zero-shot, "is it machine-written?"). Watermark detectors are calibrated on unwatermarked machine text;
 zero-shot detectors on human text. Not yet covered: SIR / EWD / SWEET / DiPmark / Christ (via MarkLLM, phase 4),
 classifier-based detectors. See `ROADMAP.md`.
+
+## Matched edit budget (v6)
+
+`notebooks/03_dose.ipynb` + `configs/lab_dose.yaml` compare SIRA with the random and lowest-surprisal controls at the same
+share of changed words. Attack names are `strategy@mask_ratio`, with an optional `xN` for N rewrite rounds
+(`sira@0.3`, `random@0.15`, `sira@0.3x2`). With `gate.enforce: false` the similarity and perplexity gates only measure.
+Evaluation also writes `scores.csv` (one detector score per text), `paired.csv` (per-text paired comparisons with bootstrap
+95% intervals) and `dose_response.png`. Note: only about 46% of words are maskable (stopwords, names, numbers, citations are
+protected), so SIRA and random converge above a mask ratio of roughly 0.4; use `xN` rounds for larger edit budgets.

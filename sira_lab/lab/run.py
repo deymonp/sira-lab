@@ -10,7 +10,7 @@ from pathlib import Path
 from ..config import load_config
 from .attacks import run_attacks
 from .detectors import detector_factories, make_encoder
-from .evaluate import evaluate, plot_tradeoff
+from .evaluate import evaluate, plot_dose_response, plot_tradeoff
 from .generate import generate_texts, load_generator, spec_for
 from .io import append_jsonl, read_jsonl
 from .prompts import load_prompts
@@ -70,7 +70,13 @@ def run_evaluate(cfg, run_dir, detectors=None, log=print):
     detectors = detectors if detectors is not None else detector_factories(cfg)
     df = evaluate(cfg, run_dir, detectors)
     plot_tradeoff(df, Path(run_dir) / "tradeoff.png")
-    log(f"[evaluate] wrote results.csv, results.md, tradeoff.png in {run_dir}")
+    plot_dose_response(df, Path(run_dir) / "dose_response.png")
+    try:
+        from .analysis import load_scores, paired_table
+        paired_table(load_scores(run_dir)).to_csv(Path(run_dir) / "paired.csv", index=False)
+    except Exception as e:                      # the main results must survive an analysis problem
+        log(f"[evaluate] paired analysis skipped: {type(e).__name__}: {e}")
+    log(f"[evaluate] wrote results.csv, results.md, scores.csv, paired.csv, tradeoff.png, dose_response.png in {run_dir}")
     return df
 
 
