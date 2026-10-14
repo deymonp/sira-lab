@@ -34,7 +34,7 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 
 1. Open `notebooks/00_setup.ipynb` in Colab (File -> Open notebook -> GitHub tab -> `deymonp/sira-lab`), set the runtime to **T4 GPU**.
 2. Add Colab secret `HF_TOKEN` (key icon, **Notebook access** on).
-3. Run all cells; expect `62 passed`.
+3. Run all cells; expect `71 passed`.
 4. Open `notebooks/01_quickstart.ipynb` and run it.
 
 CPU-only UI check (no downloads): `python app/app.py --fake`
@@ -43,9 +43,9 @@ CPU-only UI check (no downloads): `python app/app.py --fake`
 
 ```
 sira_lab/   normalize.py chunking.py scorer.py masker.py infill.py backends.py gates.py pipeline.py factory.py ui.py testing.py
-sira_lab/lab/  analysis.py watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
-configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full / lab_dose .yaml
-notebooks/  00_setup  01_quickstart  02_lab  03_dose
+sira_lab/lab/  analysis.py judge.py watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
+configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full / lab_dose / lab_v7 .yaml
+notebooks/  00_setup  01_quickstart  02_lab  03_dose  04_v7
 tests/      CPU-only unit tests
 app/app.py  launcher
 ```
@@ -82,3 +82,15 @@ share of changed words. Attack names are `strategy@mask_ratio`, with an optional
 Evaluation also writes `scores.csv` (one detector score per text), `paired.csv` (per-text paired comparisons with bootstrap
 95% intervals) and `dose_response.png`. Note: only about 46% of words are maskable (stopwords, names, numbers, citations are
 protected), so SIRA and random converge above a mask ratio of roughly 0.4; use `xN` rounds for larger edit budgets.
+
+## Combined attacks, held-out detectors, quality judge, success rate (v7)
+
+`notebooks/04_v7.ipynb` + `configs/lab_v7.yaml`.
+* **Chains**: `A+B` applies attack A then B (`paraphrase+random@0.15`). A finished `attacked_<A>.jsonl` is re-used as stage 1.
+* **Held-out detectors** `fast_detectgpt_ho`, `binoculars_ho`: SmolLM2 (a different model family than the Qwen generator).
+* **Quality judge** (`lab/judge.py`): the 7B model rates fluency of every text and meaning preservation of every rewrite (1 to 5),
+  and also rates untouched human and machine text as reference points. Caveat: a 7B judge of the same family as the rewriter is
+  noisy and may favour its own style; it is a better check than embedding similarity, not a human reader.
+* **Success rate** (`analysis.success_table`): the share of texts that beat EVERY detector AND have fluency and meaning >= 4.
+* **Score caching**: `evaluate` re-uses `scores.csv` (a changed text is re-scored), skips loading a detector whose scores are all
+  cached, and saves after every detector, so an interrupted evaluation resumes.

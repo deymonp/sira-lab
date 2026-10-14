@@ -5,6 +5,8 @@ Attack names:
   sira@0.3                      mask ratio 0.3 (also random@0.3, lowest@0.3)
   sira@0.3x2                    mask ratio 0.3, two rewrite rounds
   paraphrase                    plain LLM paraphrase of the whole passage
+  A+B                           chain: apply A, then B to A's output (e.g. paraphrase+random@0.15).
+                                A finished attacked_<A>.jsonl in the run folder is re-used as the first stage.
 """
 from __future__ import annotations
 
@@ -33,6 +35,11 @@ Return ONLY the paraphrase between <passage> and </passage> tags.
 
 
 def parse_attack(name: str) -> dict:
+    if "+" in name:
+        parts = name.split("+")
+        for part in parts:
+            parse_attack(part)                              # validates every stage (and rejects empty ones)
+        return {"kind": "chain", "parts": parts}
     if name == "paraphrase":
         return {"kind": "paraphrase"}
     m = _ATTACK_RE.match(name)
@@ -44,7 +51,7 @@ def parse_attack(name: str) -> dict:
 
 
 def attack_filename(name: str) -> str:
-    return "attacked_" + name.replace("@", "_r") + ".jsonl"
+    return "attacked_" + name.replace("@", "_r").replace("+", "_plus_") + ".jsonl"
 
 
 def paraphrase_many(texts: List[str], backend, cfg) -> List[str]:
@@ -62,9 +69,27 @@ def _quality(rewriter, orig: str, out: str) -> Dict[str, float]:
             "changed": changed_share(orig, out)}
 
 
-def run_attack_name(rewriter, name: str, texts: List[str]) -> List[dict]:
-    """Return one dict per text: {text, status, warnings, words_masked, attempts, mask_ratio_used}."""
+def _cached_stage(run_dir, part: str, keys) -> List[str] | None:
+    """Texts of an already finished single attack for exactly these (algo, id) keys, or None."""
+    recs = {(r["algo"], r["id"]): r["text"] for r in read_jsonl(Path(run_dir) / attack_filename(part))}
+    return [recs[k] for k in keys] if keys and all(k in recs for k in keys) else None
+
+
+def run_attack_name(rewriter, name: str, texts: List[str], keys=None, run_dir=None) -> List[dict]:
+    """Return one dict per text: {text, status, warnings, words_masked, attempts, mask_ratio_used}.
+    keys = [(algo, id), ...] and run_dir enable re-using a finished first stage of a chain."""
     cfg, spec = rewriter.cfg, parse_attack(name)
+    if spec["kind"] == "chain":
+        cur, last = list(texts), None
+        for k, part in enumerate(spec["parts"]):
+            cached = _cached_stage(run_dir, part, keys) if (k == 0 and run_dir is not None) else None
+            if cached is not None:
+                last = [{"text": t, "status": "rewritten", "warnings": []} for t in cached]
+            else:
+                last = run_attack_name(rewriter, part, cur)
+            cur = [r["text"] for r in last]
+        return [{**r, "status": "rewritten" if (r["status"] == "unchanged" and r["text"] != t0) else r["status"]}
+                for r, t0 in zip(last, texts)]
     if spec["kind"] == "rewrite":
         old = cfg.mask.strategy
         cfg.mask.strategy = spec["strategy"]
@@ -107,7 +132,8 @@ def run_attacks(cfg, run_dir, rewriter, attacks=None, limit=None, log: Callable[
         log(f"[attack:{name}] {len(todo)} texts to process ({len(done)} already done)")
         for i in range(0, len(todo), bs):
             batch = todo[i:i + bs]
-            results = run_attack_name(rewriter, name, [r["text"] for r in batch])
+            results = run_attack_name(rewriter, name, [r["text"] for r in batch],
+                                      keys=[(r["algo"], r["id"]) for r in batch], run_dir=run_dir)
             rows = []
             for r, res in zip(batch, results):
                 extra = {k: v for k, v in res.items() if k not in ("text", "status")}

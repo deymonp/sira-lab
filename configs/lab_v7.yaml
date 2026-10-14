@@ -1,0 +1,17 @@
+# v7: chained attacks (paraphrase first, then light edits), HELD-OUT zero-shot detectors from another model family,
+# and an LLM quality judge. Same RUN folder as before: generated texts and finished attack files are re-used.
+# Order = priority. A chain such as "paraphrase+random@0.15" re-uses the finished attacked_paraphrase.jsonl as its first stage.
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+gate:
+  enforce: false
+lab:
+  generator: Qwen/Qwen2.5-1.5B
+  n_samples: 40
+  algorithms: [kgw, synthid]
+  attacks: ["paraphrase+random@0.15", "paraphrase+random@0.3", "paraphrase+lowest@0.3", "paraphrase+sira@0.3",
+            "sira@0.3", "random@0.3", "lowest@0.3", "sira@0.3x2", "random@0.3x2", "paraphrase"]
+  detectors: [fast_detectgpt, binoculars, fast_detectgpt_ho, binoculars_ho]

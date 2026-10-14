@@ -60,3 +60,17 @@ class DifflibSim:
 
 def build_fake_rewriter(cfg: Config, **backend_kwargs) -> SiraRewriter:
     return SiraRewriter(cfg, FakeScorer(), FakeBackend(**backend_kwargs), DifflibSim())
+
+
+class FakeJudgeBackend:
+    """Judge stand-in: texts or rewrites containing 'alt' (the fake infiller's fills) get low scores."""
+
+    def generate(self, batch, max_new_tokens, temperature, top_p):
+        outs = []
+        for messages in batch:
+            u = messages[-1]["content"]
+            if "<rewrite>" in u:
+                outs.append("2" if "alt" in u.split("<rewrite>")[1] else "5")
+            else:
+                outs.append("3" if "alt" in u else "5")
+        return outs

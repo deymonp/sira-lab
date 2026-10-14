@@ -118,8 +118,8 @@ def binoculars_torch(logits_observer, logits_performer, ids):
 class FastDetectGPT:
     kind, name, algo = "zeroshot", "fast_detectgpt", None
 
-    def __init__(self, model_name: str, dtype: str = "float16", max_tokens: int = 150):
-        self.lm, self.max_tokens, self.threshold = _LM(model_name, dtype), max_tokens, None
+    def __init__(self, model_name: str, dtype: str = "float16", max_tokens: int = 150, name: str = "fast_detectgpt"):
+        self.lm, self.max_tokens, self.threshold, self.name = _LM(model_name, dtype), max_tokens, None, name
 
     def score(self, texts: List[str]) -> np.ndarray:
         out = []
@@ -136,8 +136,9 @@ class FastDetectGPT:
 class Binoculars:
     kind, name, algo = "zeroshot", "binoculars", None
 
-    def __init__(self, observer: str, performer: str, dtype: str = "float16", max_tokens: int = 150):
+    def __init__(self, observer: str, performer: str, dtype: str = "float16", max_tokens: int = 150, name: str = "binoculars"):
         self.obs, self.perf, self.max_tokens, self.threshold = _LM(observer, dtype), _LM(performer, dtype), max_tokens, None
+        self.name = name
         probe = "The quick brown fox jumps over the lazy dog."
         if self.obs.ids(probe, 99) != self.perf.ids(probe, 99):
             raise ValueError("Binoculars needs observer and performer to share a tokenizer.")
@@ -156,6 +157,12 @@ class Binoculars:
 
 
 # ------------------------------------------------------------------ the panel
+def _tag(factory, name: str, kind: str, algo=None, threshold=None):
+    """Attach metadata so evaluation can reuse cached scores WITHOUT loading the detector's model."""
+    factory.meta = {"name": name, "kind": kind, "algo": algo, "threshold": threshold}
+    return factory
+
+
 def detector_factories(cfg) -> List[Callable[[], object]]:
     """One zero-argument factory per detector, so evaluation can load -> score -> free them one at a time."""
     from .generate import spec_for
@@ -164,14 +171,21 @@ def detector_factories(cfg) -> List[Callable[[], object]]:
     for algo in lab.algorithms:
         spec = spec_for(lab, algo)
         if algo == "synthid":
-            facs.append(lambda spec=spec: SynthIDMean(spec, lab.generator))
+            f = lambda spec=spec: SynthIDMean(spec, lab.generator)
         else:
-            facs.append(lambda spec=spec: WatermarkZ(spec, make_encoder(lab.generator)))
+            f = lambda spec=spec: WatermarkZ(spec, make_encoder(lab.generator))
+        facs.append(_tag(f, f"wm_{algo}", "watermark", algo, lab.z_threshold))
     for name in lab.detectors:
         if name == "fast_detectgpt":
-            facs.append(lambda: FastDetectGPT(lab.fdg_model, cfg.models.dtype, lab.detect_tokens))
+            f = lambda: FastDetectGPT(lab.fdg_model, cfg.models.dtype, lab.detect_tokens)
         elif name == "binoculars":
-            facs.append(lambda: Binoculars(lab.bino_observer, lab.bino_performer, cfg.models.dtype, lab.detect_tokens))
+            f = lambda: Binoculars(lab.bino_observer, lab.bino_performer, cfg.models.dtype, lab.detect_tokens)
+        elif name == "fast_detectgpt_ho":
+            f = lambda: FastDetectGPT(lab.ho_fdg_model, cfg.models.dtype, lab.detect_tokens, name="fast_detectgpt_ho")
+        elif name == "binoculars_ho":
+            f = lambda: Binoculars(lab.ho_bino_observer, lab.ho_bino_performer, cfg.models.dtype,
+                                   lab.detect_tokens, name="binoculars_ho")
         else:
             raise ValueError(f"unknown detector {name!r}")
+        facs.append(_tag(f, name, "zeroshot"))
     return facs

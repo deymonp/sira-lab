@@ -3,6 +3,7 @@ Detectors are loaded, used and freed one at a time."""
 from __future__ import annotations
 
 import gc
+import hashlib
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -55,11 +56,50 @@ def _row(det, algo: str, attack: str, pos: np.ndarray, neg: np.ndarray, neg_set:
     }
 
 
+def _hash(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:10]
+
+
+class _Cached:
+    """Wraps a detector (instance or tagged factory). Scores already in scores.csv are reused; the real detector
+    (and its model) is only loaded if something is actually missing. A changed text invalidates its cached score."""
+
+    def __init__(self, item, cache: dict):
+        self.cache, self._item, self._det = cache, item, None
+        if hasattr(item, "score"):
+            self._det, meta = item, {"name": item.name, "kind": item.kind, "algo": getattr(item, "algo", None),
+                                     "threshold": getattr(item, "threshold", None)}
+        else:
+            meta = getattr(item, "meta", None)
+            if meta is None:
+                self._det = item()
+                meta = {"name": self._det.name, "kind": self._det.kind, "algo": getattr(self._det, "algo", None),
+                        "threshold": getattr(self._det, "threshold", None)}
+        self.name, self.kind, self.algo, self.threshold = meta["name"], meta["kind"], meta["algo"], meta["threshold"]
+
+    def score(self, texts: List[str], keys: list) -> np.ndarray:
+        hashes = [_hash(t) for t in texts]
+        out = []
+        for k, h in zip(keys, hashes):
+            row = self.cache.get(k)
+            th = row.get("text_hash") if row is not None else None
+            usable = row is not None and (th is None or th != th or th == h)     # None/NaN = file from an older version: trust it
+            out.append(float(row["score"]) if usable else None)
+        miss = [i for i, v in enumerate(out) if v is None]
+        if miss:
+            if self._det is None:
+                self._det = self._item()
+            for i, v in zip(miss, self._det.score([texts[i] for i in miss])):
+                out[i] = float(v)
+        return np.array(out, dtype=float)
+
+
 def _scored(det, recs: List[dict], algo: str, attack: str, sink: List[dict]) -> np.ndarray:
-    sc = det.score([r["text"] for r in recs])
+    keys = [(det.name, algo, attack, int(r["id"])) for r in recs]
+    sc = det.score([r["text"] for r in recs], keys)
     for r, s in zip(recs, sc):
-        sink.append({"detector": det.name, "algo": algo, "attack": attack, "id": r.get("id"), "score": float(s),
-                     "sim": r.get("sim"), "changed": r.get("changed")})
+        sink.append({"detector": det.name, "algo": algo, "attack": attack, "id": int(r["id"]), "score": float(s),
+                     "sim": r.get("sim"), "changed": r.get("changed"), "text_hash": _hash(r["text"])})
     return sc
 
 
@@ -92,8 +132,19 @@ def _rows_for(det, cfg, gen: List[dict], attacks: Dict[str, List[dict]], sink: L
     return rows
 
 
+def _flush(path: Path, cache: dict, sink: List[dict]) -> None:
+    import pandas as pd
+
+    merged = dict(cache)
+    for r in sink:
+        merged[(r["detector"], r["algo"], r["attack"], r["id"])] = r
+    pd.DataFrame(list(merged.values())).to_csv(path, index=False)
+
+
 def evaluate(cfg, run_dir, detectors: list):
-    """`detectors`: detector instances and/or zero-argument factories (loaded and freed one at a time)."""
+    """`detectors`: detector instances and/or tagged factories. Scores already stored in scores.csv are re-used
+    (a detector whose scores are all stored is not even loaded), and scores.csv is saved after every detector, so
+    an interrupted evaluation continues instead of starting over."""
     import pandas as pd
 
     run_dir = Path(run_dir)
@@ -102,13 +153,20 @@ def evaluate(cfg, run_dir, detectors: list):
     missing = [a for a, r in attacks.items() if not r]
     if missing:
         print(f"[evaluate] no results yet for: {missing} (skipped)")
+    cache: dict = {}
+    sp = run_dir / "scores.csv"
+    if sp.exists():
+        for r in pd.read_csv(sp).to_dict("records"):
+            cache[(r["detector"], r["algo"], r["attack"], int(r["id"]))] = r
     rows: List[Dict] = []
     sink: List[dict] = []
     for item in detectors:
-        det = item if hasattr(item, "score") else item()
+        det = _Cached(item, cache)
         try:
             rows += _rows_for(det, cfg, gen, attacks, sink)
+            _flush(sp, cache, sink)
         finally:
+            det._det = None
             del det
             gc.collect()
             try:
@@ -119,7 +177,6 @@ def evaluate(cfg, run_dir, detectors: list):
     df = pd.DataFrame(rows)
     df.to_csv(run_dir / "results.csv", index=False)
     (run_dir / "results.md").write_text(to_markdown(df), encoding="utf-8")
-    pd.DataFrame(sink).to_csv(run_dir / "scores.csv", index=False)
     return df
 
 

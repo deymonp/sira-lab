@@ -79,6 +79,12 @@ class LabCfg:
     bino_observer: str = "Qwen/Qwen2.5-1.5B"
     bino_performer: str = "Qwen/Qwen2.5-1.5B-Instruct"
     detect_tokens: int = 150                     # zero-shot detectors score only the first N tokens of every text
+    ho_fdg_model: str = "HuggingFaceTB/SmolLM2-1.7B"            # HELD-OUT zero-shot detectors: a different model family
+    ho_bino_observer: str = "HuggingFaceTB/SmolLM2-1.7B"        # than the generator, so they are not 'home turf' detectors
+    ho_bino_performer: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+    judge_batch_size: int = 8                    # LLM-judge prompts per GPU batch
+    min_fluency: int = 4                         # a rewrite counts as 'good quality' if the judge gives at least this fluency...
+    min_meaning: int = 4                         # ...and at least this meaning-preservation score (both 1-5)
     gamma: float = 0.5
     delta: float = 2.0
     key: int = 15485863
