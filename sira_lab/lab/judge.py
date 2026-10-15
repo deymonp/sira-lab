@@ -37,6 +37,32 @@ Answer with a single digit and nothing else.
 </rewrite>"""
 
 
+# Second rubric (used with an independent model for the FINAL grade, so the judge that picks the best variant is not
+# the judge that grades it). Same tags and 1-5 scale, different wording.
+FLUENCY_USER_B = """You are proofreading a passage from a scientific paper. Look for language errors: repeated words, broken grammar, wrong or unnatural word choices.
+Rate how readable and error-free it is on a scale from 1 (many errors) to 5 (no errors, reads naturally).
+The passage may begin or end in the middle of a sentence; ignore that.
+Reply with one digit only.
+
+<passage>
+{text}
+</passage>"""
+
+MEANING_USER_B = """Compare two texts. Does the REWRITE make the same claims, with the same technical terms and facts, as the ORIGINAL?
+5 = same content, 3 = some content changed or lost, 1 = different content.
+Reply with one digit only.
+
+<original>
+{orig}
+</original>
+
+<rewrite>
+{new}
+</rewrite>"""
+
+PROMPT_SETS = {"A": (FLUENCY_USER, MEANING_USER), "B": (FLUENCY_USER_B, MEANING_USER_B)}
+
+
 def parse_digit(raw: str) -> Optional[int]:
     m = re.search(r"[1-5]", raw or "")
     return int(m.group()) if m else None
@@ -47,14 +73,16 @@ def _ask(backend, prompts: List[str]) -> List[Optional[int]]:
     return [parse_digit(o) for o in backend.generate(msgs, 4, 0.0, 1.0)]
 
 
-def run_judge(cfg, run_dir, backend=None, attacks=None, log: Callable[[str], None] = print) -> None:
-    """Writes quality.jsonl (resumable) and quality.csv in the run folder."""
+def run_judge(cfg, run_dir, backend=None, attacks=None, log: Callable[[str], None] = print,
+              prompts: str = "A", out: str = "quality") -> None:
+    """Writes <out>.jsonl (resumable) and <out>.csv in the run folder. prompts = "A" (default) or "B" (second rubric)."""
     run_dir = Path(run_dir)
+    fluency_t, meaning_t = PROMPT_SETS[prompts]
     if backend is None:
         from ..backends import HFBackend
         backend = HFBackend(cfg.models.infiller, quantize_4bit=cfg.models.quantize_4bit, dtype=cfg.models.dtype,
                             device_map=cfg.models.device_map, batch_size=cfg.lab.judge_batch_size)
-    path = run_dir / "quality.jsonl"
+    path = run_dir / f"{out}.jsonl"
     done = {(r["kind"], r["algo"], r["id"]) for r in read_jsonl(path)}
     chunk = max(cfg.lab.judge_batch_size * 4, 8)
 
@@ -62,8 +90,8 @@ def run_judge(cfg, run_dir, backend=None, attacks=None, log: Callable[[str], Non
         todo = [r for r in recs if (kind, algo, r["id"]) not in done and r["text"].strip()]
         for i in range(0, len(todo), chunk):
             b = todo[i:i + chunk]
-            flu = _ask(backend, [FLUENCY_USER.format(text=r["text"]) for r in b])
-            mea = _ask(backend, [MEANING_USER.format(orig=r["orig_text"], new=r["text"]) for r in b]) if with_meaning else [None] * len(b)
+            flu = _ask(backend, [fluency_t.format(text=r["text"]) for r in b])
+            mea = _ask(backend, [meaning_t.format(orig=r["orig_text"], new=r["text"]) for r in b]) if with_meaning else [None] * len(b)
             append_jsonl(path, [{"kind": kind, "algo": algo, "id": r["id"], "fluency": f, "meaning": m}
                                 for r, f, m in zip(b, flu, mea)])
         if todo:
@@ -80,5 +108,38 @@ def run_judge(cfg, run_dir, backend=None, attacks=None, log: Callable[[str], Non
             process(name, algo, [r for r in recs if r["algo"] == algo], True)
 
     import pandas as pd
-    pd.DataFrame(read_jsonl(path)).to_csv(run_dir / "quality.csv", index=False)
-    log(f"[judge] wrote quality.csv in {run_dir}")
+    pd.DataFrame(read_jsonl(path)).to_csv(run_dir / f"{out}.csv", index=False)
+    log(f"[judge] wrote {out}.csv in {run_dir}")
+
+
+def _probe(backend) -> bool:
+    try:
+        out = backend.generate([[{"role": "system", "content": JUDGE_SYSTEM},
+                                 {"role": "user", "content": "Reply with the digit 3."}]], 3, 0.0, 1.0)
+        return parse_digit(out[0]) is not None
+    except Exception:
+        return False
+
+
+def run_judge_b(cfg, run_dir, kinds=None, backend=None, log: Callable[[str], None] = print) -> str:
+    """Independent second judge: a different model family (cfg.lab.judge_b_model) and a different rubric wording.
+    If that model cannot be loaded or does not answer, falls back to the main model with the second wording
+    (less independent; the model name written to quality_b_model.txt says which one was used). Writes quality_b.csv."""
+    run_dir = Path(run_dir)
+    label = cfg.lab.judge_b_model
+    if backend is None:
+        from ..backends import HFBackend
+        try:
+            backend = HFBackend(label, quantize_4bit=True, dtype=cfg.models.dtype, device_map=cfg.models.device_map,
+                                batch_size=cfg.lab.judge_batch_size)
+            if not _probe(backend):
+                raise RuntimeError("the model did not answer a probe question with a digit")
+        except Exception as e:
+            log(f"[judge B] could not use {label} ({type(e).__name__}: {e}). Falling back to the main model with different wording.")
+            label = f"{cfg.models.infiller} (second wording only)"
+            backend = HFBackend(cfg.models.infiller, quantize_4bit=cfg.models.quantize_4bit, dtype=cfg.models.dtype,
+                                device_map=cfg.models.device_map, batch_size=cfg.lab.judge_batch_size)
+    run_judge(cfg, run_dir, backend, attacks=kinds, log=log, prompts="B", out="quality_b")
+    (run_dir / "quality_b_model.txt").write_text(label, encoding="utf-8")
+    log(f"[judge B] model used: {label}")
+    return label

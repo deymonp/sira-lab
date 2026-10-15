@@ -40,6 +40,7 @@ class GenCfg:
     strict: bool = True             # passage mode only: reject outputs whose unmasked text was altered
     mode: str = "list"              # list = model returns only the fills ("1: word"); passage = model rewrites the whole passage
     fallback_to_passage: bool = True  # if list mode fails to parse, retry in passage mode
+    hygiene: bool = False           # fill hygiene (v8): plain-word fills only, no repeats of neighbouring words, a/an fixed
 
 
 @dataclass
@@ -83,6 +84,8 @@ class LabCfg:
     ho_bino_observer: str = "HuggingFaceTB/SmolLM2-1.7B"        # than the generator, so they are not 'home turf' detectors
     ho_bino_performer: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
     judge_batch_size: int = 8                    # LLM-judge prompts per GPU batch
+    judge_b_model: str = "microsoft/Phi-3.5-mini-instruct"   # independent second judge (different model family) for final grades
+    prep_attacks: list = field(default_factory=list)          # computed first, but NOT scored or judged (inputs for chains)
     min_fluency: int = 4                         # a rewrite counts as 'good quality' if the judge gives at least this fluency...
     min_meaning: int = 4                         # ...and at least this meaning-preservation score (both 1-5)
     gamma: float = 0.5

@@ -1,0 +1,20 @@
+# v8: (A) fixed word replacement ("fill hygiene": the *2 attack families) and (C) best-of-3 selection.
+# Same RUN folder as before: generated texts and every finished attack file are re-used.
+#   prep_attacks : computed first, never scored or judged (inputs for the chain variants)
+#   X~1, X~2     : variants of X with different random seeds; best3 = the best of X, X~1, X~2 per text (made by select_best)
+models:
+  scorer: Qwen/Qwen2.5-0.5B
+  infiller: Qwen/Qwen2.5-7B-Instruct
+  quantize_4bit: true
+  dtype: float16
+gate:
+  enforce: false
+lab:
+  generator: Qwen/Qwen2.5-1.5B
+  n_samples: 40
+  algorithms: [kgw, synthid]
+  prep_attacks: ["paraphrase~1", "paraphrase~2"]
+  attacks: ["paraphrase+random2@0.15", "paraphrase+random2@0.15~1", "paraphrase+random2@0.15~2",
+            "sira2@0.3", "random2@0.3",
+            "paraphrase+random@0.15", "paraphrase", "sira@0.3", "best3"]
+  detectors: [fast_detectgpt, binoculars, fast_detectgpt_ho, binoculars_ho]

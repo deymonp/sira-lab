@@ -34,7 +34,7 @@ evaluation lab (in progress). Zero-cost stack: Google Colab (free), Hugging Face
 
 1. Open `notebooks/00_setup.ipynb` in Colab (File -> Open notebook -> GitHub tab -> `deymonp/sira-lab`), set the runtime to **T4 GPU**.
 2. Add Colab secret `HF_TOKEN` (key icon, **Notebook access** on).
-3. Run all cells; expect `71 passed`.
+3. Run all cells; expect `86 passed`.
 4. Open `notebooks/01_quickstart.ipynb` and run it.
 
 CPU-only UI check (no downloads): `python app/app.py --fake`
@@ -43,9 +43,9 @@ CPU-only UI check (no downloads): `python app/app.py --fake`
 
 ```
 sira_lab/   normalize.py chunking.py scorer.py masker.py infill.py backends.py gates.py pipeline.py factory.py ui.py testing.py
-sira_lab/lab/  analysis.py judge.py watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
-configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full / lab_dose / lab_v7 .yaml
-notebooks/  00_setup  01_quickstart  02_lab  03_dose  04_v7
+sira_lab/lab/  analysis.py judge.py select.py watermark.py detectors.py zeroshot_math.py generate.py attacks.py evaluate.py metrics.py prompts.py run.py io.py
+configs/    default.yaml (T4)  smoke.yaml (tiny)  space.yaml (ZeroGPU, untested)  lab_smoke / lab_quick / lab_full / lab_dose / lab_v7 / lab_v8 .yaml
+notebooks/  00_setup  01_quickstart  02_lab  03_dose  04_v7  05_v8
 tests/      CPU-only unit tests
 app/app.py  launcher
 ```
@@ -94,3 +94,17 @@ protected), so SIRA and random converge above a mask ratio of roughly 0.4; use `
 * **Success rate** (`analysis.success_table`): the share of texts that beat EVERY detector AND have fluency and meaning >= 4.
 * **Score caching**: `evaluate` re-uses `scores.csv` (a changed text is re-scored), skips loading a detector whose scores are all
   cached, and saves after every detector, so an interrupted evaluation resumes.
+
+## Fill hygiene and best-of-n selection (v8)
+
+`notebooks/05_v8.ipynb` + `configs/lab_v8.yaml`.
+* **Fill hygiene** (attack families `sira2`, `random2`, `lowest2`; `gen.hygiene`): plain-word fills only (no brackets or punctuation),
+  fills that merely repeat the neighbouring word are trimmed (or the original word is kept), "a"/"an" agree with the fill,
+  and no two masks touch (`min_gap` >= 1). The v7 attacks (`sira`, `random`, ...) keep their old behaviour for comparison.
+* **Variants**: `NAME~k` is NAME with another random seed. `prep_attacks` are computed but not scored or judged.
+* **Best of n** (`lab/select.py`): per text, keep the variant that the original detectors miss and judge A rates best. It copies
+  that variant's scores and judge rows under the name `bestN`, so no detector model is reloaded.
+* **Honest grading**: held-out detectors (`*_ho`) take no part in the choice. Judge A takes part in the choice, so the final
+  quality grade uses **judge B** (`judge.run_judge_b`: another model family, `microsoft/Phi-3.5-mini-instruct`, another rubric
+  wording; falls back to the main model with the second wording if it cannot be loaded). `success_table(quality_file="quality_b.csv")`.
+* `success_table` now leaves out attacks that were never judged or lack some detector, instead of showing a misleading 0%.

@@ -203,7 +203,7 @@ class SiraRewriter:
             pending = [s for s in pending if not s.done]
             if not prepared:
                 break
-            batch = [build_messages(mr.template, s.mode) for s, mr in prepared]
+            batch = [build_messages(mr.template, s.mode, cfg.gen.hygiene) for s, mr in prepared]
             need = [
                 (12 * len(mr.masks) + 40) if s.mode == "list" else (int(1.7 * count_words(mr.template)) + 120)
                 for s, mr in prepared
@@ -214,7 +214,7 @@ class SiraRewriter:
             nxt: List[_State] = []
             for (s, mr), raw in zip(prepared, raws):
                 s.attempts += 1
-                cand, reason = parse_output(s.mode, mr.template, [m.original for m in mr.masks], raw, cfg.gen.strict)
+                cand, reason = parse_output(s.mode, mr.template, [m.original for m in mr.masks], raw, cfg.gen.strict, cfg.gen.hygiene)
                 if cand is None:
                     preview = raw.strip().replace("\n", " | ")[:200]
                     s.warnings.append(f"round {r + 1} attempt {attempt + 1} ({s.mode} mode): {reason}. Model said: {preview!r}")

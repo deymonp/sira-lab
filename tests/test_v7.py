@@ -13,7 +13,8 @@ from test_lab_pipeline import _make_run
 
 
 def test_chain_parsing_and_filenames():
-    assert parse_attack("paraphrase+random@0.15") == {"kind": "chain", "parts": ["paraphrase", "random@0.15"]}
+    c = parse_attack("paraphrase+random@0.15")
+    assert c["kind"] == "chain" and c["parts"] == ["paraphrase", "random@0.15"] and c["variant"] == 0
     assert attack_filename("paraphrase+sira@0.3x2") == "attacked_paraphrase_plus_sira_r0.3x2.jsonl"
     for bad in ("paraphrase+", "+sira", "sira+banana", "paraphrase++sira"):
         with pytest.raises(ValueError):

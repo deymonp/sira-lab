@@ -39,14 +39,24 @@ Rules:
 
 _LIST_EX_OUT = "1: suggest\n2: achieve\n3: effect"
 
+_HYGIENE_RULES = ("- The replacement must not repeat the word directly before or directly after the placeholder.\n"
+                  "- Use plain words only: no brackets, parentheses or other punctuation.\n")
 
-def build_messages(template: str, mode: str = "passage") -> List[Dict[str, str]]:
+
+def _list_template(hygiene: bool) -> str:
+    if not hygiene:
+        return LIST_USER_TMPL
+    return LIST_USER_TMPL.replace("- Output nothing else", _HYGIENE_RULES + "- Output nothing else")
+
+
+def build_messages(template: str, mode: str = "passage", hygiene: bool = False) -> List[Dict[str, str]]:
     if mode == "list":
+        t = _list_template(hygiene)
         return [
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": LIST_USER_TMPL.format(template=_EX_IN)},
+            {"role": "user", "content": t.format(template=_EX_IN)},
             {"role": "assistant", "content": _LIST_EX_OUT},
-            {"role": "user", "content": LIST_USER_TMPL.format(template=template)},
+            {"role": "user", "content": t.format(template=template)},
         ]
     return [
         {"role": "system", "content": SYSTEM},
@@ -99,12 +109,62 @@ def extract_fills(template: str, passage: str) -> Optional[List[str]]:
     return fills
 
 
-def valid_fill(f: str) -> bool:
-    return bool(f) and 1 <= len(f.split()) <= 4 and len(f) <= 40 and "<" not in f and ">" not in f
+_PLAIN_WORD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9'\-]*$")
+_AN_EXCEPTIONS = ("uni", "use", "usu", "eu", "one", "once", "ubi")
+_ART = re.compile(r"(?i)\b(a|an)\s+$")
 
 
-def fill_template(template: str, fills: List[str]) -> str:
-    return MASK_RE.sub(lambda m: fills[int(m.group(1)) - 1], template)
+def valid_fill(f: str, strict: bool = False) -> bool:
+    ok = bool(f) and 1 <= len(f.split()) <= 4 and len(f) <= 40 and "<" not in f and ">" not in f
+    if ok and strict:                         # hygiene: plain words only (no brackets, parentheses, odd punctuation)
+        ok = all(_PLAIN_WORD.match(w) for w in f.split())
+    return ok
+
+
+def _fix_article(prefix: str, fill: str) -> str:
+    """If the text just before a fill ends in 'a'/'an', make the article agree with the fill's first letter."""
+    m, words = _ART.search(prefix), fill.split()
+    if not m or not words:
+        return prefix
+    first = words[0].lower()
+    new = "an" if (first[0] in "aeiou" and not first.startswith(_AN_EXCEPTIONS)) else "a"
+    if m.group(1).lower() == new:
+        return prefix
+    if m.group(1)[0].isupper():
+        new = new.capitalize()
+    return prefix[:m.start(1)] + new + prefix[m.end(1):]
+
+
+def fill_template(template: str, fills: List[str], fix_articles: bool = False) -> str:
+    parts = MASK_RE.split(template)               # [seg0, n1, seg1, n2, seg2, ...]
+    out = parts[0]
+    for i in range(1, len(parts), 2):
+        fill = fills[int(parts[i]) - 1]
+        if fix_articles:
+            out = _fix_article(out, fill)
+        out += fill + parts[i + 1]
+    return out
+
+
+def neighbor_words(template: str) -> List[tuple]:
+    """For every mask: (word directly before it, word directly after it), lower-case, or None when punctuation intervenes."""
+    segs = MASK_RE.split(template)[0::2]
+    out = []
+    for i in range(len(segs) - 1):
+        left = re.search(r"([A-Za-z0-9'\-]+)\s+$", segs[i])
+        right = re.match(r"\s+([A-Za-z0-9'\-]+)", segs[i + 1])
+        out.append((left.group(1).lower() if left else None, right.group(1).lower() if right else None))
+    return out
+
+
+def dedupe_fill(fill: str, original: str, left: Optional[str], right: Optional[str]) -> str:
+    """Remove words of the fill that merely repeat the neighbouring word ('lengths lengths'); keep the original if nothing is left."""
+    words = fill.split()
+    if left and words and words[0].lower().strip("'-") == left.strip("'-"):
+        words = words[1:]
+    if right and words and words[-1].lower().strip("'-") == right.strip("'-"):
+        words = words[:-1]
+    return " ".join(words) if words else original
 
 
 def lenient_accept(template: str, passage: str) -> Optional[str]:
@@ -162,25 +222,29 @@ def parse_list_output(raw: str) -> Dict[int, str]:
     return fills
 
 
-def parse_list_candidate(template: str, originals: List[str], raw: str, min_frac: float = 0.5):
-    """Return ((text, swaps) | None, reason). Missing fills keep the original word."""
+def parse_list_candidate(template: str, originals: List[str], raw: str, min_frac: float = 0.5, hygiene: bool = False):
+    """Return ((text, swaps) | None, reason). Missing fills keep the original word.
+    hygiene=True: plain-word fills only, neighbour repeats removed, a/an agreement fixed."""
     n = len(originals)
     parsed = parse_list_output(raw)
+    nb = neighbor_words(template) if hygiene else None
     good = {}
     for i, f in parsed.items():
         if 1 <= i <= n:
             f = _clean_fill(f, originals[i - 1])
-            if valid_fill(f):
+            if hygiene and valid_fill(f, strict=True):
+                f = _clean_fill(dedupe_fill(f, originals[i - 1], *nb[i - 1]), originals[i - 1])
+            if valid_fill(f, strict=hygiene):
                 good[i] = f
     if len(good) < max(1, math.ceil(min_frac * n)):
         return None, f"only {len(good)} of {n} usable fills in the model output"
     full = [good.get(i + 1, originals[i]) for i in range(n)]
-    return (fill_template(template, full), list(zip(originals, full))), ""
+    return (fill_template(template, full, fix_articles=hygiene), list(zip(originals, full))), ""
 
 
-def parse_output(mode: str, template: str, originals: List[str], raw: str, strict: bool = True):
+def parse_output(mode: str, template: str, originals: List[str], raw: str, strict: bool = True, hygiene: bool = False):
     """Dispatch on mode. Returns ((text, swaps) | None, reason)."""
     if mode == "list":
-        return parse_list_candidate(template, originals, raw)
+        return parse_list_candidate(template, originals, raw, hygiene=hygiene)
     cand = parse_candidate(template, originals, raw, strict)
     return cand, ("" if cand else "output did not match the template (text outside the masks changed, wrong format, or a fill was too long)")

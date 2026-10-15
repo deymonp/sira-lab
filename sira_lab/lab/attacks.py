@@ -7,6 +7,11 @@ Attack names:
   paraphrase                    plain LLM paraphrase of the whole passage
   A+B                           chain: apply A, then B to A's output (e.g. paraphrase+random@0.15).
                                 A finished attacked_<A>.jsonl in the run folder is re-used as the first stage.
+  sira2 | random2 | lowest2     same strategies with v8 "fill hygiene" (plain-word fills, no repeats of neighbouring
+                                words, a/an fixed) and no two masks next to each other
+  NAME~k                        variant k of NAME: same recipe, different random seed (k = 1, 2, ...; no suffix = variant 0)
+                                e.g. paraphrase+random2@0.15~2.  Used for best-of-n selection.
+  bestN                         derived by select.select_best from variants; never run as an attack
 """
 from __future__ import annotations
 
@@ -24,7 +29,8 @@ from .io import append_jsonl, read_jsonl
 from .metrics import changed_share, edit_ratio
 
 STRATEGY = {"sira": "surprisal", "random": "random", "lowest": "lowest"}
-_ATTACK_RE = re.compile(r"^(sira|random|lowest)(?:@(\d*\.?\d+))?(?:x(\d+))?$")
+_ATTACK_RE = re.compile(r"^(sira|random|lowest)(2)?(?:@(\d*\.?\d+))?(?:x(\d+))?$")
+_DERIVED_RE = re.compile(r"^best\d+$")
 
 PARAPHRASE_USER = """Paraphrase the following passage from a research article. Keep the meaning, technical terms, numbers and citations, but change the wording and sentence structure.
 Return ONLY the paraphrase between <passage> and </passage> tags.
@@ -35,23 +41,30 @@ Return ONLY the paraphrase between <passage> and </passage> tags.
 
 
 def parse_attack(name: str) -> dict:
-    if "+" in name:
-        parts = name.split("+")
+    if _DERIVED_RE.match(name):
+        return {"kind": "derived"}
+    m = re.match(r"^(.*?)(?:~(\d+))?$", name)
+    core, variant = m.group(1), int(m.group(2)) if m.group(2) else 0
+    if "+" in core:
+        parts = core.split("+")
         for part in parts:
+            if "~" in part:
+                raise ValueError(f"{name!r}: put the variant marker once, at the very end (e.g. 'paraphrase+random@0.15~2')")
             parse_attack(part)                              # validates every stage (and rejects empty ones)
-        return {"kind": "chain", "parts": parts}
-    if name == "paraphrase":
-        return {"kind": "paraphrase"}
-    m = _ATTACK_RE.match(name)
+        return {"kind": "chain", "parts": parts, "variant": variant}
+    if core == "paraphrase":
+        return {"kind": "paraphrase", "variant": variant}
+    m = _ATTACK_RE.match(core)
     if not m:
-        raise ValueError(f"unknown attack {name!r} (use sira, random, lowest, paraphrase, e.g. 'sira@0.3' or 'sira@0.3x2')")
-    return {"kind": "rewrite", "strategy": STRATEGY[m.group(1)],
-            "ratio": float(m.group(2)) if m.group(2) else None,
-            "rounds": int(m.group(3)) if m.group(3) else None}
+        raise ValueError(f"unknown attack {name!r} (use sira, random, lowest, paraphrase, e.g. 'sira@0.3', 'sira2@0.3x2', "
+                         "'paraphrase+random2@0.15~1')")
+    return {"kind": "rewrite", "strategy": STRATEGY[m.group(1)], "hygiene": bool(m.group(2)),
+            "ratio": float(m.group(3)) if m.group(3) else None,
+            "rounds": int(m.group(4)) if m.group(4) else None, "variant": variant}
 
 
 def attack_filename(name: str) -> str:
-    return "attacked_" + name.replace("@", "_r").replace("+", "_plus_") + ".jsonl"
+    return "attacked_" + name.replace("@", "_r").replace("+", "_plus_").replace("~", "_v") + ".jsonl"
 
 
 def paraphrase_many(texts: List[str], backend, cfg) -> List[str]:
@@ -75,29 +88,48 @@ def _cached_stage(run_dir, part: str, keys) -> List[str] | None:
     return [recs[k] for k in keys] if keys and all(k in recs for k in keys) else None
 
 
+def _seed(rewriter, variant: int) -> None:
+    """Variant 0 keeps the original behaviour; other variants get their own random streams."""
+    cfg = rewriter.cfg
+    rewriter._rng = random.Random(cfg.seed + variant)
+    if variant:
+        try:
+            from transformers import set_seed
+            set_seed(cfg.seed + 1000 * variant)
+        except Exception:
+            pass
+
+
 def run_attack_name(rewriter, name: str, texts: List[str], keys=None, run_dir=None) -> List[dict]:
     """Return one dict per text: {text, status, warnings, words_masked, attempts, mask_ratio_used}.
     keys = [(algo, id), ...] and run_dir enable re-using a finished first stage of a chain."""
     cfg, spec = rewriter.cfg, parse_attack(name)
+    if spec["kind"] == "derived":
+        raise ValueError(f"{name!r} is derived by select.select_best and cannot be run as an attack")
+    k = spec.get("variant", 0)
     if spec["kind"] == "chain":
         cur, last = list(texts), None
-        for k, part in enumerate(spec["parts"]):
-            cached = _cached_stage(run_dir, part, keys) if (k == 0 and run_dir is not None) else None
+        for j, part in enumerate(spec["parts"]):
+            cached = None
+            if j == 0 and run_dir is not None:
+                cached = _cached_stage(run_dir, part + (f"~{k}" if k else ""), keys)
             if cached is not None:
                 last = [{"text": t, "status": "rewritten", "warnings": []} for t in cached]
             else:
-                last = run_attack_name(rewriter, part, cur)
+                last = run_attack_name(rewriter, part + (f"~{k}" if k else ""), cur)
             cur = [r["text"] for r in last]
         return [{**r, "status": "rewritten" if (r["status"] == "unchanged" and r["text"] != t0) else r["status"]}
                 for r, t0 in zip(last, texts)]
     if spec["kind"] == "rewrite":
-        old = cfg.mask.strategy
+        old = (cfg.mask.strategy, cfg.gen.hygiene, cfg.mask.min_gap)
         cfg.mask.strategy = spec["strategy"]
-        rewriter._rng = random.Random(cfg.seed)
+        if spec["hygiene"]:
+            cfg.gen.hygiene, cfg.mask.min_gap = True, max(1, cfg.mask.min_gap)
+        _seed(rewriter, k)
         try:
             reps = rewriter.rewrite_many(texts, mask_ratio=spec["ratio"], rounds=spec["rounds"])
         finally:
-            cfg.mask.strategy = old
+            cfg.mask.strategy, cfg.gen.hygiene, cfg.mask.min_gap = old
         res = []
         for rep in reps:
             if rep.words_changed == 0:
@@ -113,6 +145,7 @@ def run_attack_name(rewriter, name: str, texts: List[str], keys=None, run_dir=No
                 "words_masked": rep.words_masked, "attempts": sum(c.attempts for c in rep.chunks),
                 "mask_ratio_used": float(np.mean(ratios)) if ratios else None})
         return res
+    _seed(rewriter, k)
     outs = paraphrase_many(texts, rewriter.backend, cfg)
     return [{"text": o, "status": "unchanged" if o == t else "rewritten", "warnings": []} for o, t in zip(outs, texts)]
 
@@ -124,8 +157,10 @@ def run_attacks(cfg, run_dir, rewriter, attacks=None, limit=None, log: Callable[
     if limit:
         wm = wm[:limit]
     bs = cfg.lab.attack_batch_size
-    for name in attacks or cfg.lab.attacks:
-        parse_attack(name)                                   # fail early on typos
+    names = list(cfg.lab.prep_attacks) + list(attacks or cfg.lab.attacks)       # prep attacks first: inputs for chains
+    for name in names:
+        if parse_attack(name)["kind"] == "derived":           # fail early on typos; skip names made by select_best
+            continue
         path = run_dir / attack_filename(name)
         done = {(r["algo"], r["id"]) for r in read_jsonl(path)}
         todo = [r for r in wm if (r["algo"], r["id"]) not in done]
@@ -137,7 +172,8 @@ def run_attacks(cfg, run_dir, rewriter, attacks=None, limit=None, log: Callable[
             rows = []
             for r, res in zip(batch, results):
                 extra = {k: v for k, v in res.items() if k not in ("text", "status")}
-                rows.append({"id": r["id"], "algo": r["algo"], "attack": name, "orig_text": r["text"],
+                rows.append({"id": r["id"], "algo": r["algo"], "attack": name, "variant": parse_attack(name).get("variant", 0),
+                             "orig_text": r["text"],
                              "text": res["text"], "status": res["status"], **extra,
                              **_quality(rewriter, r["text"], res["text"])})
             append_jsonl(path, rows)

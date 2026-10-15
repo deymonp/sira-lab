@@ -19,9 +19,11 @@ DOSE = ["sira@0.3", "random@0.3", "sira@0.15", "random@0.15", "sira@0.3x2", "ran
 
 
 def test_parse_attack_and_filenames():
-    assert parse_attack("sira") == {"kind": "rewrite", "strategy": "surprisal", "ratio": None, "rounds": None}
+    a = parse_attack("sira")
+    assert (a["kind"], a["strategy"], a["ratio"], a["rounds"], a["hygiene"], a["variant"]) == ("rewrite", "surprisal", None, None, False, 0)
     assert parse_attack("random@0.15")["ratio"] == 0.15
-    assert parse_attack("lowest@0.3x2") == {"kind": "rewrite", "strategy": "lowest", "ratio": 0.3, "rounds": 2}
+    b = parse_attack("lowest@0.3x2")
+    assert (b["strategy"], b["ratio"], b["rounds"]) == ("lowest", 0.3, 2)
     assert parse_attack("paraphrase")["kind"] == "paraphrase"
     assert attack_filename("sira") == "attacked_sira.jsonl" and attack_filename("sira@0.3x2") == "attacked_sira_r0.3x2.jsonl"
     for bad in ("siraa", "sira@", "random@x", "banana@0.3"):

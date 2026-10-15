@@ -19,11 +19,11 @@ def auto_pairs(attacks: List[str]) -> List[Tuple[str, str]]:
     """Pair every sira attack with the random / lowest attack that has the same settings."""
     pairs = []
     for a in attacks:
-        m = re.match(r"^sira((?:@[\d.]+)?(?:x\d+)?)$", a)
+        m = re.match(r"^sira(2?)((?:@[\d.]+)?(?:x\d+)?)$", a)
         if m:
             for other in ("random", "lowest"):
-                if other + m.group(1) in attacks:
-                    pairs.append((a, other + m.group(1)))
+                if other + m.group(1) + m.group(2) in attacks:
+                    pairs.append((a, other + m.group(1) + m.group(2)))
     return pairs
 
 
@@ -56,22 +56,8 @@ def paired_table(scores, pairs: Optional[List[Tuple[str, str]]] = None, n_boot: 
 
 
 # ---------------------------------------------------------------------------------------------- success rate
-def success_table(run_dir, z_threshold: float = 4.0, fpr: float = 0.01, min_fluency: int = 4, min_meaning: int = 4,
-                  min_sim: float = 0.85, n_boot: int = 1000, seed: int = 0):
-    """Per-text success: a rewritten text SUCCEEDS if it slips past EVERY detector in the panel AND is good quality.
-
-    * Watermark detector: evaded if z < z_threshold. Zero-shot detector: evaded if its score is at or below the
-      threshold that gives `fpr` false alarms on human text.
-    * Quality: judge fluency >= min_fluency and meaning >= min_meaning when quality.csv exists, otherwise
-      embedding similarity >= min_sim (a weak proxy). The column `quality_basis` says which was used.
-    Columns evade_zs / evade_zs_ho: the two original / the two held-out (other model family) zero-shot detectors."""
-    import pandas as pd
-
-    run_dir = Path(run_dir)
-    sc = load_scores(run_dir)
-    qpath = run_dir / "quality.csv"
-    q = pd.read_csv(qpath) if qpath.exists() else None
-
+def detector_thresholds(sc, z_threshold: float = 4.0, fpr: float = 0.01) -> dict:
+    """Watermark detectors: fixed z threshold. Zero-shot detectors: the score that gives `fpr` false alarms on human text."""
     thr = {}
     for det, g in sc.groupby("detector"):
         if det.startswith("wm_"):
@@ -79,15 +65,49 @@ def success_table(run_dir, z_threshold: float = 4.0, fpr: float = 0.01, min_flue
         else:
             neg = g[g["attack"] == "NEG:human"]["score"].to_numpy(float)
             thr[det] = float(np.quantile(neg, 1 - fpr)) if len(neg) else float("nan")
+    return thr
+
+
+def is_evaded(detector: str, score: float, thr: dict) -> bool:
+    return (score < thr[detector]) if detector.startswith("wm_") else (score <= thr[detector])
+
+
+def success_table(run_dir, z_threshold: float = 4.0, fpr: float = 0.01, min_fluency: int = 4, min_meaning: int = 4,
+                  min_sim: float = 0.85, n_boot: int = 1000, seed: int = 0, quality_file: str = "quality.csv",
+                  log=print):
+    """Per-text success: a rewritten text SUCCEEDS if it slips past EVERY detector in the panel AND is good quality.
+
+    * Watermark detector: evaded if z < z_threshold. Zero-shot detector: evaded if its score is at or below the
+      threshold that gives `fpr` false alarms on human text.
+    * Quality: judge fluency >= min_fluency and meaning >= min_meaning from `quality_file` (quality.csv = judge A;
+      quality_b.csv = the independent judge B) when it exists, otherwise embedding similarity >= min_sim (a weak proxy).
+      Attacks that have no judge scores, or are missing some detector, are left out (and listed) instead of showing a
+      misleading 0%. `quality_basis` says which quality measure was used.
+    Columns evade_zs / evade_zs_ho: the original / the held-out (other model family) zero-shot detectors."""
+    import pandas as pd
+
+    run_dir = Path(run_dir)
+    sc = load_scores(run_dir)
+    qpath = run_dir / quality_file
+    q = pd.read_csv(qpath) if qpath.exists() else None
+
+    thr = detector_thresholds(sc, z_threshold, fpr)
     a = sc["attack"].astype(str)
     sc = sc[~a.str.startswith("NEG") & ~a.str.startswith("unwatermarked")].copy()
     sc = sc[[not np.isnan(thr[d]) for d in sc["detector"]]]
-    sc["evaded"] = [(s < thr[d]) if d.startswith("wm_") else (s <= thr[d]) for s, d in zip(sc["score"], sc["detector"])]
+    sc["evaded"] = [is_evaded(d, s_, thr) for s_, d in zip(sc["score"], sc["detector"])]
 
-    rows, rng = [], np.random.default_rng(seed)
+    rows, rng, dropped = [], np.random.default_rng(seed), []
     for algo in sorted(sc["algo"].unique()):
         g = sc[sc["algo"] == algo]
         g = g[[(not d.startswith("wm_")) or d == f"wm_{algo}" for d in g["detector"]]]
+        n_det = g.groupby("attack")["detector"].nunique()
+        complete = set(n_det[n_det == n_det.max()].index)
+        has_q = set(q[q["algo"] == algo]["kind"]) if q is not None else complete
+        dropped += [(algo, x) for x in sorted(set(n_det.index) - (complete & has_q))]
+        g = g[g["attack"].isin(complete & has_q)]
+        if g.empty:
+            continue
         piv = g.pivot_table(index=["attack", "id"], columns="detector", values="evaded", aggfunc="first").dropna(axis=1, how="all")
         zs = [c for c in piv.columns if not c.startswith("wm_") and not c.endswith("_ho")]
         zs_ho = [c for c in piv.columns if c.endswith("_ho")]
@@ -104,7 +124,7 @@ def success_table(run_dir, z_threshold: float = 4.0, fpr: float = 0.01, min_flue
             out = out.merge(qq, on=["attack", "id"], how="left")
             out.loc[out["attack"] == "none", "meaning"] = 5
             out["quality_ok"] = (out["fluency"] >= min_fluency) & (out["meaning"] >= min_meaning)
-            basis = "judge"
+            basis = "judge" if quality_file == "quality.csv" else f"judge ({quality_file})"
         else:
             sim = g.drop_duplicates(["attack", "id"])[["attack", "id", "sim"]]
             out = out.merge(sim, on=["attack", "id"], how="left")
@@ -123,6 +143,8 @@ def success_table(run_dir, z_threshold: float = 4.0, fpr: float = 0.01, min_flue
             if q is not None:
                 row["fluency_mean"], row["meaning_mean"] = float(d["fluency"].mean()), float(d["meaning"].mean())
             rows.append(row)
+    if dropped:
+        log("[success] left out (no judge scores or missing detectors): " + ", ".join(f"{a_}/{x}" for a_, x in dropped))
     return pd.DataFrame(rows)
 
 
